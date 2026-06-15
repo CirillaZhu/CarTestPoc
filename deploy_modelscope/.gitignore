@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+deepseek_key.txt
+last_answer.html
+.venv/

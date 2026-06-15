@@ -1,0 +1,4 @@
+modelscope
+sentence-transformers
+openai
+numpy
