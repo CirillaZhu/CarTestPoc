@@ -89,3 +89,48 @@ def media_of(hits):
     for c, _ in hits:
         out.extend(c.get("media", []))
     return out
+
+
+# ---------------------------------------------------------------------------
+# 知识库地图：把高维向量降到 2D 看「覆盖面」，并把问题投到同一空间看检索效果。
+# 降维用纯 numpy 的 PCA（SVD），不引入 sklearn/umap，云端零额外重依赖。
+# ---------------------------------------------------------------------------
+
+@functools.lru_cache(maxsize=1)
+def _pca_basis():
+    """在全部向量上拟合一次 PCA 主轴：返回 (均值, 前两主成分)。
+    全量拟合保证坐标稳定——某文档是否「已入库」只影响显示，不会让点乱跳。"""
+    _, emb = load_index()
+    mean = emb.mean(axis=0)
+    _, _, vt = np.linalg.svd(emb - mean, full_matrices=False)
+    return mean, vt[:2]                     # comps: (2, d)
+
+
+def project_points(vectors):
+    """把任意向量（含库内块或新问题）投到同一张 2D 地图上。"""
+    mean, comps = _pca_basis()
+    vectors = np.asarray(vectors)
+    if vectors.ndim == 1:
+        vectors = vectors[None, :]
+    return (vectors - mean) @ comps.T       # (n, 2)
+
+
+def embed_query(query):
+    """对问题做检索侧向量化（带 bge 前缀、已归一化）。"""
+    return get_model().encode([QUERY_PROMPT + query], normalize_embeddings=True)[0]
+
+
+def retrieve_among(query, active_docs, k=TOP_K):
+    """只在「已入库」的文档集合里检索，用于演示新增前后的检索差异。
+    返回 (hits, 问题向量)，问题向量供地图投点复用。"""
+    chunks, emb = load_index()
+    qv = embed_query(query)
+    scores = emb @ qv
+    active = set(active_docs or [])
+    out = []
+    for i in np.argsort(-scores):
+        if chunks[i]["doc"] in active:
+            out.append((chunks[i], float(scores[i])))
+            if len(out) >= k:
+                break
+    return out, qv

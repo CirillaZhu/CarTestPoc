@@ -2,3 +2,4 @@ modelscope
 sentence-transformers
 openai
 numpy
+plotly

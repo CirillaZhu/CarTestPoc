@@ -43,7 +43,16 @@
       "Bash(cygpath -w -s ~/.ssh/id_ed25519)",
       "Bash(cygpath -w -s ~/.ssh)",
       "Read(//c/Windows/System32/OpenSSH/**)",
-      "Bash(/c/Windows/System32/OpenSSH/ssh.exe -o StrictHostKeyChecking=no -T git@github.com)"
+      "Bash(/c/Windows/System32/OpenSSH/ssh.exe -o StrictHostKeyChecking=no -T git@github.com)",
+      "Bash(powershell.exe -NoProfile -Command 'Get-ChildItem -Recurse -Path rag -Depth 2 | Where-Object { -not $_.PSIsContainer } | Select-Object FullName,Length | Format-Table -AutoSize; Write-Host '\\\\''---INDEX---'\\\\''; Get-ChildItem rag\\\\index -ErrorAction SilentlyContinue | Select-Object Name,Length')",
+      "Bash(powershell.exe -NoProfile -Command \"python -c \\\\\"import json; d=json.load\\(open\\('rag/index/chunks.json',encoding='utf-8'\\)\\); print\\('count',len\\(d\\)\\); print\\('keys',list\\(d[0].keys\\(\\)\\)\\); import pprint; pprint.pprint\\({k:\\(str\\(v\\)[:120]\\) for k,v in d[0].items\\(\\)}\\)\\\\\"\")",
+      "Bash(./.venv/Scripts/python.exe -c \"import json,collections; d=json.load\\(open\\('rag/index/chunks.json',encoding='utf-8'\\)\\); print\\('count',len\\(d\\)\\); print\\('keys',list\\(d[0].keys\\(\\)\\)\\); c=collections.Counter\\(x['doc'] for x in d\\); print\\('docs',dict\\(c\\)\\); print\\('sample',json.dumps\\(d[0],ensure_ascii=False\\)[:400]\\)\")",
+      "Bash(cp rag/index/chunks.json rag/index/embeddings.npy deploy_modelscope/index/)",
+      "Bash(rm -f deploy_modelscope/media/*)",
+      "Bash(cp rag/media/* deploy_modelscope/media/)",
+      "Bash(\"/d/Ciris File/AgentProject/CarTestPoc/.venv/Scripts/python.exe\" -c \"import json; d=json.load\\(open\\(r'D:\\\\Ciris File\\\\AgentProject\\\\CarTestPoc\\\\deploy_modelscope\\\\index\\\\chunks.json',encoding='utf-8'\\)\\); print\\('切片数:',len\\(d\\)\\); print\\('含clause字段:', 'clause' in d[0]\\); print\\('示例heading:', d[50]['heading'][:50]\\)\")",
+      "Bash(HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 ../.venv/Scripts/python.exe -c ' *)",
+      "Bash(UV_CACHE_DIR=\"D:/AI/uv/cache\" UV_PYTHON_INSTALL_DIR=\"D:/AI/uv/python\" /d/AI/uv/bin/uv.exe pip install --python \".venv/Scripts/python.exe\" plotly)"
     ]
   }
 }
