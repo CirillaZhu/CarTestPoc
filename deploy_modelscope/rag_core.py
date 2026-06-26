@@ -8,30 +8,40 @@ INDEX_DIR = os.path.join(HERE, "index")
 MEDIA_DIR = os.environ.get("RAG_MEDIA_DIR", os.path.join(HERE, "media"))  # 图片统一放这
 # 本地已缓存的 ModelScope 模型目录（仅本机有；云端不存在会自动跳过）
 _LOCAL_MODEL = r"D:\AI\models\modelscope\models\AI-ModelScope\bge-small-zh-v1___5"
+_LOCAL_RERANKER = r"D:\AI\models\modelscope\models\BAAI\bge-reranker-base"
 MODELSCOPE_ID = "AI-ModelScope/bge-small-zh-v1.5"
+RERANKER_ID = "BAAI/bge-reranker-base"
 QUERY_PROMPT = "为这个句子生成表示以用于检索相关文章："   # bge-zh 检索侧推荐前缀
 TOP_K = 5
+RERANK_TOPN = 20          # 一级召回候选数（送进 reranker 精排）
+RERANK_THRESHOLD = 0.30   # 精排相关概率阈值，低于则判为不相关、丢弃（解决过召）
 DEEPSEEK_BASE = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-chat"
 
 
-def resolve_model_dir():
-    """按优先级拿到 embedding 模型目录：环境变量 > 本地缓存 > ModelScope 下载。
-    这样同一份代码：本机用已下好的模型，云端(创空间)首次启动自动从 ModelScope 拉。"""
-    p = os.environ.get("EMB_MODEL_PATH")
+def _resolve_dir(env_key, local_dir, ms_id):
+    """模型目录：环境变量 > 本地缓存 > ModelScope 下载。一份代码本地/云端通用。"""
+    p = os.environ.get(env_key)
     if p and os.path.isdir(p):
         return p
-    if os.path.isdir(_LOCAL_MODEL):
-        return _LOCAL_MODEL
+    if os.path.isdir(local_dir):
+        return local_dir
     from modelscope import snapshot_download
-    return snapshot_download(MODELSCOPE_ID)
+    return snapshot_download(ms_id)
 
 
 @functools.lru_cache(maxsize=1)
 def get_model():
-    """embedding 模型只加载一次。"""
+    """embedding 模型（一级召回）只加载一次。"""
     from sentence_transformers import SentenceTransformer
-    return SentenceTransformer(resolve_model_dir())
+    return SentenceTransformer(_resolve_dir("EMB_MODEL_PATH", _LOCAL_MODEL, MODELSCOPE_ID))
+
+
+@functools.lru_cache(maxsize=1)
+def get_reranker():
+    """cross-encoder 精排模型只加载一次。"""
+    from sentence_transformers import CrossEncoder
+    return CrossEncoder(_resolve_dir("RERANKER_PATH", _LOCAL_RERANKER, RERANKER_ID))
 
 
 def media_path(m):
@@ -47,12 +57,28 @@ def load_index():
     return chunks, emb
 
 
-def retrieve(query, k=TOP_K):
+def retrieve(query, k=TOP_K, rerank=True, threshold=RERANK_THRESHOLD):
+    """两阶段检索：
+    ① 召回——向量相似度取 Top-N 候选（宁多勿漏）。
+    ② 精筛——cross-encoder 把 query 与每个候选拼一起打分（能读懂"B级≠F3"），
+       作为相关性门控：低于阈值的判为不相关直接丢弃（解决过召：弱相关块及其图片不再带出）。
+    顺序仍沿用一级相似度（精确条款已排在前），reranker 只负责"砍掉不相关"。
+    返回 [(chunk, 相关概率)]。"""
     chunks, emb = load_index()
     q = get_model().encode([QUERY_PROMPT + query], normalize_embeddings=True)[0]
-    scores = emb @ q                      # 已归一化，点积=余弦
-    idx = np.argsort(-scores)[:k]
-    return [(chunks[i], float(scores[i])) for i in idx]
+    scores = emb @ q                                  # 余弦相似度
+    cand_idx = np.argsort(-scores)[: (RERANK_TOPN if rerank else k)]
+
+    if not rerank:
+        return [(chunks[i], float(scores[i])) for i in cand_idx]
+
+    # CrossEncoder 自带 Sigmoid，predict 直接返回 0~1 相关概率
+    probs = get_reranker().predict([[query, chunks[i]["text"]] for i in cand_idx])
+    kept = [(chunks[i], float(p)) for i, p in zip(cand_idx, probs) if p >= threshold][:k]
+    if not kept:                                      # 全被过滤则保底给相似度最高的一条
+        i = cand_idx[0]
+        kept = [(chunks[i], float(scores[i]))]
+    return kept
 
 
 def build_context(hits):
@@ -89,48 +115,3 @@ def media_of(hits):
     for c, _ in hits:
         out.extend(c.get("media", []))
     return out
-
-
-# ---------------------------------------------------------------------------
-# 知识库地图：把高维向量降到 2D 看「覆盖面」，并把问题投到同一空间看检索效果。
-# 降维用纯 numpy 的 PCA（SVD），不引入 sklearn/umap，云端零额外重依赖。
-# ---------------------------------------------------------------------------
-
-@functools.lru_cache(maxsize=1)
-def _pca_basis():
-    """在全部向量上拟合一次 PCA 主轴：返回 (均值, 前两主成分)。
-    全量拟合保证坐标稳定——某文档是否「已入库」只影响显示，不会让点乱跳。"""
-    _, emb = load_index()
-    mean = emb.mean(axis=0)
-    _, _, vt = np.linalg.svd(emb - mean, full_matrices=False)
-    return mean, vt[:2]                     # comps: (2, d)
-
-
-def project_points(vectors):
-    """把任意向量（含库内块或新问题）投到同一张 2D 地图上。"""
-    mean, comps = _pca_basis()
-    vectors = np.asarray(vectors)
-    if vectors.ndim == 1:
-        vectors = vectors[None, :]
-    return (vectors - mean) @ comps.T       # (n, 2)
-
-
-def embed_query(query):
-    """对问题做检索侧向量化（带 bge 前缀、已归一化）。"""
-    return get_model().encode([QUERY_PROMPT + query], normalize_embeddings=True)[0]
-
-
-def retrieve_among(query, active_docs, k=TOP_K):
-    """只在「已入库」的文档集合里检索，用于演示新增前后的检索差异。
-    返回 (hits, 问题向量)，问题向量供地图投点复用。"""
-    chunks, emb = load_index()
-    qv = embed_query(query)
-    scores = emb @ qv
-    active = set(active_docs or [])
-    out = []
-    for i in np.argsort(-scores):
-        if chunks[i]["doc"] in active:
-            out.append((chunks[i], float(scores[i])))
-            if len(out) >= k:
-                break
-    return out, qv
